@@ -24,22 +24,12 @@ float KERNEL_t::Get(int index_f, int index_y, int index_x, int index_c) const {
   return data[(index_f) * (size * size * n_feature_in) + (index_y) * (size * n_feature_in) + (index_x) * (n_feature_in) + (index_c)];
 }
 
-void KERNEL_t::UpdateData(float *data_update) {
-  for (long i = 0; i < n_feature_in * size * size * n_kernel; i++) {
-    data[i] = data_update[i];
-  }
-}
-void KERNEL_t::RandomData() {
-  for (long i = 0; i < n_feature_in * size * size * n_kernel; i++) {
-    data[i] = (float)GetRandom(-50, 50) / 100.0;
-  }
-  for (int i = 0; i < n_kernel; i++) {
-    bias[i] = (float)GetRandom(-50, 50) / 100.0;
-  }
-}
 /**
  * class kernel
  */
+
+#define KERNEL_AT(kernel, f, y, x, c) \
+  ((kernel).data[(f) * ((kernel).size * (kernel).size * (kernel).n_feature_in) + (y) * ((kernel).size * (kernel).n_feature_in) + (x) * ((kernel).n_feature_in) + (c)])
 
 #define FEATURE(feature_maps, y, x, f, num_feature_maps) \
   (feature_maps[(y) * (img_w * num_feature_maps) + (x) * (num_feature_maps) + (f)])
@@ -58,39 +48,6 @@ KERNEL_t kernels_2(C1, 3, C2);
 KERNEL_t kernels_3(C2, 3, C3);
 KERNEL_t kernels_4(C3, 1, C4);
 
-void PrintKernel(KERNEL_t &kernel, int kernel_index){
-    int K = kernel.size;
-    int Cin = kernel.n_feature_in;
-
-    Serial.printf("\n===== KERNEL %d =====\n", kernel_index);
-
-    if(kernel.bias)
-        Serial.printf("bias: %f\n", kernel.bias[kernel_index]);
-
-    for(int c = 0; c < Cin; c++)
-    {
-        Serial.printf("[C%d]\n", c);
-
-        for(int ky = 0; ky < K; ky++)
-        {
-            for(int kx = 0; kx < K; kx++)
-            {
-                long idx =
-                kernel_index * (K*K*Cin) +
-                ky * (K*Cin) +
-                kx * Cin +
-                c;
-
-                Serial.printf("% .6f ", kernel.data[idx]);
-            }
-
-            Serial.println();
-        }
-
-        Serial.println();
-    }
-}
-
 void CNN_Init() {
   
   Init_SPIFFS();
@@ -101,28 +58,24 @@ void CNN_Init() {
   bool ok4 = Load_CNN_AllKernels_FromTxtFiles("/kernels_4", kernels_4);
 
   if (!ok1) {
-    kernels_1.RandomData();
     Serial.println("Load fail");
   } else {
     Serial.println("Load success");
   }
 
   if (!ok2) {
-    kernels_2.RandomData();
     Serial.println("Load fail");
   } else {
     Serial.println("Load success");
   }
 
   if (!ok3) {
-    kernels_3.RandomData();
     Serial.println("Load fail");
   } else {
     Serial.println("Load success");
   }
 
   if (!ok4) {
-    kernels_4.RandomData();
     Serial.println("Load fail");
   } else {
     Serial.println("Load success");
@@ -143,29 +96,33 @@ void applyConvolutionCNN(float *input_image, int img_h, int img_w, KERNEL_t &ker
       // Duyệt từng output feature map
       for (int f = 0; f < kernel.n_kernel; ++f) {
         float sum = 0;
-
         // Áp dụng kernel 3D cho feature map f
-        for (int ky = 0; ky < kernel.size; ++ky) {
-          for (int kx = 0; kx < kernel.size; ++kx) {
+        
+
+        // nếu pixel đang ở các biên thì giảm kích thước kernel sao cho không lấy pixel thừa ngoài biên
+        int xt = 0;
+        int yt = 0;
+        int xe = 0;
+        int ye = 0;
+        
+        if(y == 0) yt = 1;
+        if(x == 0) xt = 1;
+        if(y == img_h-1) ye = 1;
+        if(x == img_w-1) xe = 1;
+
+        for (int ky = yt; ky < kernel.size-ye; ++ky) {
+          for (int kx = xt; kx < kernel.size-xe; ++kx) {
             for (int c = 0; c < kernel.n_feature_in; ++c) {
               int iy = y + ky - offset;
               int ix = x + kx - offset;
-
-              float pixel_val = 0;
-              if (iy >= 0 && iy < img_h && ix >= 0 && ix < img_w) {
-                // Truy cập pixel: row-major, channel cuối cùng
-                pixel_val = input_image[iy * img_w * kernel.n_feature_in + ix * kernel.n_feature_in + c];
-              }  // zero-padding
-
-              float kernel_val = kernel.Get(f, ky, kx, c);
-              sum += pixel_val * kernel_val;
+              sum += KERNEL_AT(kernel, f, ky, kx, c) * input_image[iy * img_w * kernel.n_feature_in + ix * kernel.n_feature_in + c];// time CNN: 4569 - 1890 - 1846 - 1395 - 1375
             }
           }
         }
         sum += kernel.bias[f];
         sum = relu_(sum);
 
-        FEATURE(feature_maps_out, y, x, f, kernel.n_kernel) = static_cast<float>(sum);
+        FEATURE(feature_maps_out, y, x, f, kernel.n_kernel) =sum;
       }
     }
   }
@@ -240,55 +197,44 @@ void CNN_FeedForward(uint8_t *inputImage_uint8, float *flatmap) {
   }
   
   // convolutional lần 1
-  Serial.println("conv1 start");
   float *image_convolution = (float *)ps_malloc(HEIGHT_convo_1 * WIDTH_convo_1 * C1 * sizeof(float));
   float *image_pooling = (float *)ps_malloc(HEIGHT_pooling_1 * WIDTH_pooling_1 * C1 * sizeof(float));
-  applyConvolutionCNN(inputImage, HEIGHT_convo_1, WIDTH_convo_1, kernels_1, image_convolution);
-  Serial.println("conv1 done");
 
-  Serial.println("pool1 start");
+  applyConvolutionCNN(inputImage, HEIGHT_convo_1, WIDTH_convo_1, kernels_1, image_convolution);
   applyMaxPooling(image_convolution, HEIGHT_convo_1, WIDTH_convo_1, kernels_1.n_kernel, poolsize, poolsize, image_pooling);
+
   free(image_convolution);
   image_convolution = NULL;
-  Serial.println("pool1 done");
   
 
   // convolutional lần 2
-  Serial.println("conv2 start");
   float *image_convolution_2 = (float *)ps_malloc(HEIGHT_convo_2 * WIDTH_convo_2 * C2 * sizeof(float));
   float *image_pooling2 = (float *)ps_malloc(HEIGHT_pooling_2 * WIDTH_pooling_2 * C2 * sizeof(float));
-  applyConvolutionCNN(image_pooling, HEIGHT_convo_2, WIDTH_convo_2, kernels_2, image_convolution_2);
-  Serial.println("conv2 done");
 
-  Serial.println("pool2 start");
+  applyConvolutionCNN(image_pooling, HEIGHT_convo_2, WIDTH_convo_2, kernels_2, image_convolution_2);
   applyMaxPooling(image_convolution_2, HEIGHT_convo_2, WIDTH_convo_2, kernels_2.n_kernel, poolsize, poolsize, image_pooling2);
+
   free(image_convolution_2);
   image_convolution_2 = NULL;
   free(image_pooling);
   image_pooling = NULL;
-  Serial.println("pool2 done");
 
   // convolutional lần 3
-  Serial.println("conv3 start");
   float *image_convolution_3 = (float *)ps_malloc(HEIGHT_convo_3 * WIDTH_convo_3 * C3 * sizeof(float));
   float *image_pooling3 = (float *)ps_malloc(HEIGHT_pooling_3 * WIDTH_pooling_3 * C3 * sizeof(float));
-  applyConvolutionCNN(image_pooling2, HEIGHT_convo_3, WIDTH_convo_3, kernels_3, image_convolution_3);
-  Serial.println("conv3 done");
 
-  Serial.println("pool3 start");
+  applyConvolutionCNN(image_pooling2, HEIGHT_convo_3, WIDTH_convo_3, kernels_3, image_convolution_3);
   applyMaxPooling(image_convolution_3, HEIGHT_convo_3, WIDTH_convo_3, kernels_3.n_kernel, poolsize, poolsize, image_pooling3);
+
   free(image_convolution_3);
   image_convolution_3 = NULL;
   free(image_pooling2);
   image_pooling2 = NULL;
-  Serial.println("pool3 done");
 
   // convolutional head
-  Serial.println("conv4 start");
   applyConvolutionCNN(image_pooling3, HEIGHT_pooling_3, WIDTH_pooling_3, kernels_4, flatmap);
   free(image_pooling3);
   image_pooling3 = NULL;
-  Serial.println("conv4 done");
 
   free(inputImage);
   inputImage = NULL;

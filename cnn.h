@@ -17,8 +17,6 @@ public:
   KERNEL_t(int n_f, int s, int n_k);
   ~KERNEL_t();
   float Get(int index_f, int index_y, int index_x, int index_c) const;
-  void UpdateData(float *data_update);
-  void RandomData();
 };
 /**
      * class kernel
